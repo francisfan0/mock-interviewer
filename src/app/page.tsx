@@ -1,10 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { buildGeneratedProblem } from "@/lib/generated";
 import { LIBRARY } from "@/lib/problems";
 import type { GeneratedProblem } from "@/lib/server/schemas";
+import { splitSourceInput } from "@/lib/source-input";
 import { deleteCustomProblem, loadCustomProblems, saveCustomProblem } from "@/lib/storage";
 import type { Difficulty, Problem } from "@/lib/types";
 
@@ -35,29 +36,77 @@ export default function Home() {
   const [mode, setMode] = useState<Mode>("generate");
   const [topic, setTopic] = useState("");
   const [difficulty, setDifficulty] = useState<Difficulty>("medium");
-  const [numParts, setNumParts] = useState(3);
+  const [numParts, setNumParts] = useState<number | "auto">(3);
   const [sourceText, setSourceText] = useState("");
+  const [fetchedLabel, setFetchedLabel] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Problem | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [setupHint, setSetupHint] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/status")
+      .then((r) => r.json() as Promise<{ ready: boolean; hint: string | null }>)
+      .then((s) => setSetupHint(s.ready ? null : s.hint))
+      .catch(() => undefined);
+  }, []);
 
   const start = (id: string) => router.push(`/interview/${id}?t=${minutes}`);
 
+  const loadPage = async () => {
+    const { sourceUrl } = splitSourceInput(sourceText);
+    if (!sourceUrl) {
+      setError("Paste a URL first, or just write the question in prose.");
+      return;
+    }
+    setError(null);
+    setBusy("Fetching the page…");
+    try {
+      const res = await fetch("/api/fetch-source", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: sourceUrl }),
+      });
+      const data = (await res.json()) as { text?: string; title?: string; url?: string; error?: string };
+      if (!res.ok || !data.text) throw new Error(data.error ?? "Could not fetch that page.");
+      setSourceText(data.text);
+      setFetchedLabel(data.title ?? data.url ?? sourceUrl);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const create = async () => {
     setError(null);
+    setDraft(null);
     if (mode === "import" && !sourceText.trim()) {
-      setError("Paste a problem statement first.");
+      setError("Paste a URL or write the question in prose.");
       return;
     }
     try {
-      setBusy(mode === "import" ? "Structuring your problem into parts…" : "Designing a problem…");
+      setBusy(mode === "import" ? "Setting up the question (parts, hidden spec, tests)…" : "Designing a problem…");
+      const imported = mode === "import" ? splitSourceInput(sourceText) : null;
       const res = await fetch("/api/generate-problem", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
-          mode === "import" ? { sourceText, numParts, difficulty } : { topic, difficulty, numParts },
+          imported
+            ? { ...imported, difficulty, numParts: numParts === "auto" ? undefined : numParts }
+            : { topic, difficulty, numParts },
         ),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const raw = await res.text();
+        try {
+          const parsed = JSON.parse(raw) as { error?: string };
+          throw new Error(parsed.error ?? raw);
+        } catch (e) {
+          if (e instanceof Error && e.message !== raw) throw e;
+          throw new Error(raw);
+        }
+      }
       const gen = (await res.json()) as GeneratedProblem;
 
       setBusy("Validating reference solutions and computing expected outputs…");
@@ -70,7 +119,7 @@ export default function Home() {
 
       saveCustomProblem(problem);
       customStore.refresh();
-      start(problem.id);
+      setDraft(problem);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -86,6 +135,19 @@ export default function Home() {
           Practice multi-part coding interviews. Ask clarifying questions, code in Python right in the browser, run tests,
           and get a scorecard at the end.
         </p>
+        {setupHint && (
+          <p className="mt-3 max-w-2xl rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+            {setupHint}{" "}
+            <a
+              href="https://console.groq.com/keys"
+              target="_blank"
+              rel="noreferrer"
+              className="underline decoration-amber-400/50 hover:decoration-amber-200"
+            >
+              Open Groq console
+            </a>
+          </p>
+        )}
         <div className="mt-4 flex items-center gap-2 text-sm text-zinc-400">
           Time limit
           <select
@@ -129,7 +191,10 @@ export default function Home() {
             {(["generate", "import"] as Mode[]).map((m) => (
               <button
                 key={m}
-                onClick={() => setMode(m)}
+                onClick={() => {
+                  setMode(m);
+                  setNumParts(m === "import" ? "auto" : numParts === "auto" ? 3 : numParts);
+                }}
                 className={`flex-1 rounded-md px-3 py-1.5 ${mode === m ? "bg-zinc-700 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
               >
                 {m === "generate" ? "Generate new" : "Bring your own"}
@@ -148,16 +213,37 @@ export default function Home() {
               />
             </label>
           ) : (
-            <label className="mb-3 block text-sm text-zinc-400">
-              Problem statement (and test cases, if you have them)
-              <textarea
-                value={sourceText}
-                onChange={(e) => setSourceText(e.target.value)}
-                rows={8}
-                placeholder="Paste a problem. The interviewer will split it into parts, write a hidden spec and reference solution, and verify any tests you include."
-                className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600"
-              />
-            </label>
+            <>
+              <label className="mb-2 block text-sm text-zinc-400">
+                URL or question in prose
+                <textarea
+                  value={sourceText}
+                  onChange={(e) => {
+                    setSourceText(e.target.value);
+                    setFetchedLabel(null);
+                  }}
+                  rows={8}
+                  placeholder={`Paste a URL or write the question in your own words.
+
+Example:
+https://interviewresources.perplexity.ai/hands-on-coding/examples/todo-list/
+
+or: "Implement a todo list for an agent. Tasks have statuses that only move forward. Then add dependencies. Then render the list for an LLM."`}
+                  className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600"
+                />
+              </label>
+              <div className="mb-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={loadPage}
+                  disabled={!!busy || !splitSourceInput(sourceText).sourceUrl}
+                  className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+                >
+                  Load page into editor
+                </button>
+                {fetchedLabel && <span className="truncate text-[11px] text-zinc-500">Loaded: {fetchedLabel}</span>}
+              </div>
+            </>
           )}
 
           <div className="mb-4 grid grid-cols-2 gap-3">
@@ -176,10 +262,11 @@ export default function Home() {
             <label className="text-sm text-zinc-400">
               Parts
               <select
-                value={numParts}
-                onChange={(e) => setNumParts(Number(e.target.value))}
+                value={String(numParts)}
+                onChange={(e) => setNumParts(e.target.value === "auto" ? "auto" : Number(e.target.value))}
                 className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm text-zinc-100"
               >
+                {mode === "import" && <option value="auto">From source</option>}
                 {[2, 3, 4].map((n) => (
                   <option key={n} value={n}>
                     {n}
@@ -194,10 +281,35 @@ export default function Home() {
             disabled={!!busy}
             className="w-full rounded-md bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
           >
-            {busy ?? (mode === "generate" ? "Generate & start" : "Import & start")}
+            {busy ?? (mode === "generate" ? "Generate question" : "Set up question")}
           </button>
           {busy && <p className="mt-2 animate-pulse text-xs text-zinc-500">This can take up to a minute.</p>}
           {error && <pre className="mt-3 whitespace-pre-wrap text-xs text-rose-400">{error}</pre>}
+          {draft && (
+            <div className="mt-4 space-y-3 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-3">
+              <div className="text-xs uppercase tracking-wider text-indigo-300">Ready to interview</div>
+              <div>
+                <div className="font-medium text-zinc-100">{draft.title}</div>
+                <p className="mt-1 text-xs text-zinc-400">{draft.summary}</p>
+              </div>
+              <ol className="list-decimal space-y-1 pl-4 text-sm text-zinc-300">
+                {draft.parts.map((p) => (
+                  <li key={p.id}>{p.title}</li>
+                ))}
+              </ol>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => start(draft.id)}
+                  className="rounded-md bg-zinc-100 px-3 py-1.5 text-sm font-medium text-zinc-900 hover:bg-white"
+                >
+                  Start interview
+                </button>
+                <button onClick={() => setDraft(null)} className="text-xs text-zinc-500 hover:text-zinc-300">
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       </div>
     </div>

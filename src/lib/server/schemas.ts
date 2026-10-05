@@ -29,7 +29,7 @@ export const generatedProblemSchema = z.object({
   summary: z.string(),
   difficulty: z.enum(["easy", "medium", "hard"]),
   tags: z.array(z.string()),
-  starterCode: z.string().describe("Python stub for part 1 only (signatures with `pass`)"),
+  starterCode: z.string().describe("Python stub the candidate starts with for part 1: helper types/enums plus method/function signatures using `pass`"),
   parts: z.array(generatedPartSchema),
 });
 

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.71",
+    "@ai-sdk/groq": "^4.0.54",
     "@ai-sdk/openai": "^4.0.83",
     "@ai-sdk/react": "^4.0.130",
     "@monaco-editor/react": "^4.7.0",
