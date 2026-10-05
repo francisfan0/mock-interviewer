@@ -1,6 +1,12 @@
-import { generateText, Output } from "ai";
-import { generatorModel } from "@/lib/server/models";
-import { generatedProblemSchema, INPUT_FORMAT_GUIDE } from "@/lib/server/schemas";
+import { generateJson, publicModelError } from "@/lib/server/generate-json";
+import {
+  generatedProblemSchema,
+  INPUT_FORMAT_GUIDE,
+  partImplementationSchema,
+  PROBLEM_JSON_SHAPE,
+  problemOutlineSchema,
+  type GeneratedProblem,
+} from "@/lib/server/schemas";
 import { fetchSourcePage } from "@/lib/server/source";
 
 export const maxDuration = 120;
@@ -32,14 +38,13 @@ export async function POST(req: Request) {
     ? `Turn the user's material into a structured multi-part Python coding interview.
 
 Rules for conversion:
-- If the material already has numbered parts, KEEP those coding parts in the same order and intent. Do not invent extra parts or merge distinct parts. Skip non-coding material (NDAs, interview agreements, recruiter notes, "share your screen" reminders) unless it contains the actual problem.
+- Skip logistics, NDAs, integrity agreements, language-choice notes, evaluation criteria, and "Part 1 setup / read the README / sign" sections. Those are not coding parts.
+- If the material has numbered coding parts (APIs, starter code, input/output), KEEP those parts in the same order and intent. Do not invent extra parts or merge distinct parts.
+- If the material is a process/guide page that only names example problems (e.g. "Todo List: agent-friendly task tracker with dependencies"), treat the first example as the topic and invent a complete problem in that style.
 - If the material is unstructured prose (a single prompt, a blog post, a verbal question), invent ${numParts ?? 3} progressively harder parts that build on the same codebase.
-- Preserve starter code, class/function names, enums, and documented behavior. starterCode must be a runnable stub of part 1, including any helper types the candidate is given.
+- Preserve starter code, class/function names, enums, and documented behavior. starterCode must be a runnable stub of the first coding part, including any helper types the candidate is given.
 - Prompts shown to the candidate should match the original wording in spirit, but stay concise. Put precise edge-case rules in hiddenSpec (do not volunteer them).
 - Do not leak later-part requirements into earlier-part prompts.
-- referenceSolution for part N must be complete and cumulative (supports everything from parts 1..N), Python stdlib only, deterministic.
-- For open-ended output (e.g. "render as a string for an LLM"), pick one concrete format, write it into hiddenSpec, implement it in the reference, and write tests that check the required facts appear (ids, statuses, descriptions, dependencies) rather than an arbitrary pretty-print.
-- Write 5-8 tests per part covering the documented success and failure cases.
 
 ${fetchedFrom ? `Source URL: ${fetchedFrom}\n` : ""}User-provided material:
 """
@@ -48,24 +53,62 @@ ${imported.slice(0, 36_000)}
     : `Create an original ${difficulty} multi-part coding interview problem${topic ? ` about: ${topic}` : ""}. It must have exactly ${numParts ?? 3} parts.`;
 
   try {
-    const { output } = await generateText({
-      model: generatorModel(),
-      output: Output.object({ schema: generatedProblemSchema }),
-      instructions: `You design (or faithfully convert) realistic multi-part coding interview problems in the style of top tech companies (Python only).
-
-Requirements:
-- Each part builds on the previous one: the same code evolves (new method, new constraint, or generalization).
-- hiddenSpec must be precise enough that any two engineers would write the same expected outputs.
-- Prefer return values that are deterministic (define tie-breaking explicitly in hiddenSpec).
-- Mix visible and hidden tests.
-
-${INPUT_FORMAT_GUIDE}`,
-      prompt: task,
-    });
-
+    const output = await generateStructuredProblem(task);
     return Response.json(output);
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return Response.json({ error: message }, { status: 500 });
+    return Response.json({ error: publicModelError(e) }, { status: 500 });
   }
+}
+
+async function generateStructuredProblem(task: string): Promise<GeneratedProblem> {
+  const outline = await generateJson(problemOutlineSchema, {
+    instructions: `You design (or faithfully convert) realistic multi-part coding interview problems in the style of top tech companies (Python only).
+
+This step is the OUTLINE only: title, summary, tags, starterCode, and parts with prompt/signature/hiddenSpec/clarifications/advanceCriteria.
+Do NOT include referenceSolution or tests yet. parts must be a JSON array with at least one coding part.
+
+Use these JSON field names exactly:
+${PROBLEM_JSON_SHAPE}`,
+    prompt: `${task}
+
+Return the outline JSON now.`,
+  });
+
+  const parts: GeneratedProblem["parts"] = [];
+  for (let i = 0; i < outline.parts.length; i++) {
+    const part = outline.parts[i];
+    const impl = await generateJson(partImplementationSchema, {
+      instructions: `You write a correct Python reference solution and tests for one interview part.
+Python stdlib only, deterministic. The solution is cumulative (includes earlier parts).
+Return JSON with:
+- "solutionLines": array of Python source lines (do NOT put the whole file in one string)
+- "tests": 4-6 objects { "description": string, "input": <JSON value, not a string>, "hidden": boolean }
+
+${INPUT_FORMAT_GUIDE}`,
+      prompt: `Problem: ${outline.title}
+Part ${i + 1} of ${outline.parts.length}: ${part.title}
+
+Prompt:
+${part.prompt}
+
+Signature:
+${part.signature}
+
+Entry: ${part.entryKind} named ${part.entryName}
+
+hiddenSpec:
+${part.hiddenSpec.map((s) => `- ${s}`).join("\n")}
+
+Starter code:
+\`\`\`python
+${outline.starterCode}
+\`\`\`
+
+Earlier reference solutions (already correct):
+${parts.map((p, j) => `### Part ${j + 1}\n\`\`\`python\n${p.referenceSolution}\n\`\`\``).join("\n\n") || "(none)"}`,
+    });
+    parts.push({ ...part, ...impl });
+  }
+
+  return generatedProblemSchema.parse({ ...outline, parts });
 }

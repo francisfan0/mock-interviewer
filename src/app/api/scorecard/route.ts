@@ -1,6 +1,5 @@
-import { generateText, Output } from "ai";
 import { z } from "zod";
-import { generatorModel } from "@/lib/server/models";
+import { generateJson, publicModelError } from "@/lib/server/generate-json";
 import type { Observation, PartSnapshot } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -31,11 +30,10 @@ const scorecardSchema = z.object({
 export async function POST(req: Request) {
   const body: Body = await req.json();
 
-  const { output } = await generateText({
-    model: generatorModel(),
-    output: Output.object({ schema: scorecardSchema }),
-    instructions: `You are an interview calibration committee writing feedback for a mock coding interview. Be honest, specific, and actionable. Cite concrete moments from the transcript as evidence. Scores: 1 = significant concerns, 2 = below bar, 3 = meets bar, 4 = exceeds. Weigh how far they got, hint usage, whether they asked good clarifying questions, and whether they tested their own code.`,
-    prompt: `Problem: ${body.problemTitle}
+  try {
+    const output = await generateJson(scorecardSchema, {
+      instructions: `You are an interview calibration committee writing feedback for a mock coding interview. Be honest, specific, and actionable. Cite concrete moments from the transcript as evidence. Scores: 1 = significant concerns, 2 = below bar, 3 = meets bar, 4 = exceeds. Weigh how far they got, hint usage, whether they asked good clarifying questions, and whether they tested their own code.`,
+      prompt: `Problem: ${body.problemTitle}
 Parts completed: ${body.snapshots.length} of ${body.totalParts}
 Total time: ${Math.round(body.elapsedSec / 60)} min
 
@@ -52,7 +50,10 @@ ${body.observations.map((o) => `- [${o.category}/${o.signal}] ${o.note}`).join("
 
 Transcript:
 ${body.transcript.slice(-30000)}`,
-  });
+    });
 
-  return Response.json(output);
+    return Response.json(output);
+  } catch (e) {
+    return Response.json({ error: publicModelError(e) }, { status: 500 });
+  }
 }

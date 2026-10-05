@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { buildGeneratedProblem } from "@/lib/generated";
+import { buildGeneratedProblem, generateMoreTests } from "@/lib/generated";
 import { LIBRARY } from "@/lib/problems";
 import type { GeneratedProblem } from "@/lib/server/schemas";
 import { splitSourceInput } from "@/lib/source-input";
@@ -114,12 +114,25 @@ export default function Home() {
       const broken = reports.find((r) => r.compileError);
       if (broken) throw new Error(`Generated reference solution for ${broken.partId} doesn't run:\n${broken.compileError}`);
       if (!problem.parts.length) throw new Error("The generated problem had no parts. Try again.");
-      const thin = problem.parts.find((p) => p.tests.length < 3);
-      if (thin) throw new Error(`Part "${thin.title}" ended up with too few valid tests. Try generating again.`);
 
-      saveCustomProblem(problem);
+      const parts = [...problem.parts];
+      for (let i = 0; i < parts.length; i++) {
+        if (parts[i].tests.length >= 3) continue;
+        setBusy(`Adding extra tests for ${parts[i].title}…`);
+        try {
+          const extra = await generateMoreTests(parts[i], 6);
+          if (extra.tests.length) parts[i] = { ...parts[i], tests: [...parts[i].tests, ...extra.tests] };
+        } catch {
+          // Keep whatever valid tests we already have.
+        }
+      }
+      const padded = { ...problem, parts };
+      const empty = padded.parts.find((p) => p.tests.length < 1);
+      if (empty) throw new Error(`Part "${empty.title}" ended up with no valid tests. Try generating again.`);
+
+      saveCustomProblem(padded);
       customStore.refresh();
-      setDraft(problem);
+      setDraft(padded);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -283,7 +296,7 @@ or: "Implement a todo list for an agent. Tasks have statuses that only move forw
           >
             {busy ?? (mode === "generate" ? "Generate question" : "Set up question")}
           </button>
-          {busy && <p className="mt-2 animate-pulse text-xs text-zinc-500">This can take up to a minute.</p>}
+          {busy && <p className="mt-2 animate-pulse text-xs text-zinc-500">This can take a couple of minutes.</p>}
           {error && <pre className="mt-3 whitespace-pre-wrap text-xs text-rose-400">{error}</pre>}
           {draft && (
             <div className="mt-4 space-y-3 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-3">
