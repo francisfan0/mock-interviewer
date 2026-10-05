@@ -6,7 +6,7 @@ import { createProviderRegistry } from "ai";
 const registry = createProviderRegistry({ anthropic, groq, openai });
 
 const DEFAULTS = {
-  groq: "groq:llama-3.3-70b-versatile",
+  groq: "groq:openai/gpt-oss-120b",
   anthropic: "anthropic:claude-sonnet-5-5",
   openai: "openai:gpt-5",
 } as const;

@@ -13,7 +13,7 @@ npm run dev
 
 Open http://localhost:3000.
 
-The interviewer defaults to Groq (`llama-3.3-70b-versatile`) when `GROQ_API_KEY` is set. You can still use Anthropic or OpenAI. Override with `INTERVIEWER_MODEL` / `GENERATOR_MODEL` in `provider:model` form (e.g. `groq:openai/gpt-oss-120b`).
+The interviewer defaults to Groq (`openai/gpt-oss-120b`) when `GROQ_API_KEY` is set. You can still use Anthropic or OpenAI. Override with `INTERVIEWER_MODEL` / `GENERATOR_MODEL` in `provider:model` form (e.g. `groq:openai/gpt-oss-20b`).
 
 ## How it works
 
